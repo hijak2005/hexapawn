@@ -21,20 +21,14 @@ const CELL_HIGHT_GAP: u16 = 1;
 const CELL_COLOR_COMPUTER: Color = Color::Yellow;
 const CELL_COLOR_PLAYER: Color = Color::White;
 const CELL_COLOR_EMPTY: Color = Color::DarkGrey;
-const CELL_COLOR_SELECTED: Color = Color::Rgb { r: 0, g: 200, b: 0 };
-const CELL_COLOR_AVAILABLE: Color = Color::Blue;
+const CELL_COLOR_SELECTED: Color = Color::AnsiValue(158);
+const CELL_COLOR_MOVE: Color = Color::Blue;
 
 struct Board {
     cells: Vec<Cell>,
-    board_status: BoardStatus,
     selected_cell: Option<Cell>,
-    available_cells: Vec<Cell>,
-    selectable_cells: Vec<Cell>,
-    screen: Screen,
+    move_cells: Vec<Cell>,
     running: bool,
-}
-
-struct Screen {
     columns: u16,
     rows: u16,
 }
@@ -56,12 +50,8 @@ enum CellType {
     Empty,
     Player,
     Computer,
-}
-
-enum BoardStatus {
-    Selecting,
-    Moving,
-    Computer,
+    Selected,
+    Move,
 }
 
 impl Board {
@@ -81,37 +71,85 @@ impl Board {
                 cells.push(cell);
             }
         }
-        let selectable_cells: Vec<Cell> = cells
-            .iter()
-            .filter(|cell| matches!(cell.cell_type, CellType::Player))
-            .cloned()
-            .collect();
         let (columns, rows) = crossterm::terminal::size()?;
         Ok(Board {
             cells,
-            board_status: BoardStatus::Selecting,
             selected_cell: None,
-            available_cells: Vec::new(),
-            selectable_cells,
-            screen: Screen { columns, rows },
+            move_cells: Vec::new(),
             running: true,
+            columns,
+            rows,
         })
     }
 
     fn get_c(&self) -> u16 {
-        self.screen.columns / 2 - CELL_WIDTH - CELL_WIDTH / 2 - CELL_WIDTH_GAP
+        self.columns / 2 - CELL_WIDTH - CELL_WIDTH / 2 - CELL_WIDTH_GAP
     }
 
     fn get_r(&self) -> u16 {
-        self.screen.rows / 2 - CELL_HIGHT - CELL_HIGHT / 2 - CELL_HIGHT_GAP
+        self.rows / 2 - CELL_HIGHT - CELL_HIGHT / 2 - CELL_HIGHT_GAP
     }
 
     fn update_selected(&mut self, mouse: &Mouse) {
         self.selected_cell = self
-            .selectable_cells
+            .cells
             .iter()
-            .find(|cell| cell.is_clicked(self, mouse))
-            .cloned();
+            .find(|cell| cell.is_clicked(self, mouse) && matches!(cell.cell_type, CellType::Player))
+            .cloned()
+            .map(|mut cell| {
+                cell.cell_type = CellType::Selected;
+                cell
+            });
+    }
+
+    fn update_move(&mut self) {
+        self.move_cells.clear();
+        if let Some(cell) = &self.selected_cell {
+            let (column, row) = (cell.column, cell.row);
+            if let Some(empty_front) = self
+                .cells
+                .iter()
+                .find(|c| c.column == column && c.row + 1 == row)
+            {
+                if matches!(empty_front.cell_type, CellType::Empty) {
+                    self.move_cells.push(Cell {
+                        column,
+                        row: row - 1,
+                        cell_type: CellType::Move,
+                    });
+                }
+            }
+            if let Some(enemy_right) = self
+                .cells
+                .iter()
+                .find(|c| c.column == column + 1 && c.row + 1 == row)
+            {
+                if matches!(enemy_right.cell_type, CellType::Empty) {
+                    self.move_cells.push(Cell {
+                        column,
+                        row: row - 1,
+                        cell_type: CellType::Move,
+                    });
+                }
+            }
+            if let Some(enemy_left) = self
+                .cells
+                .iter()
+                .find(|c| c.column + 1 == column && c.row + 1 == row)
+            {
+                if matches!(enemy_left.cell_type, CellType::Empty) {
+                    self.move_cells.push(Cell {
+                        column,
+                        row: row - 1,
+                        cell_type: CellType::Move,
+                    });
+                }
+            }
+        }
+    }
+
+    fn update_cells(){
+        
     }
 
     fn draw(&self, stdout: &mut Stdout) -> std::io::Result<()> {
@@ -119,10 +157,10 @@ impl Board {
             cell.draw(stdout, self)?;
         }
         if let Some(cell) = &self.selected_cell {
-            cell.draw_selected(stdout, self)?;
+            cell.draw(stdout, self)?;
         }
-        for cell in &self.available_cells {
-            cell.draw_available(stdout, self)?;
+        for cell in &self.move_cells {
+            cell.draw(stdout, self)?;
         }
         Ok(())
     }
@@ -134,6 +172,8 @@ impl Cell {
             CellType::Computer => CELL_COLOR_COMPUTER,
             CellType::Empty => CELL_COLOR_EMPTY,
             CellType::Player => CELL_COLOR_PLAYER,
+            CellType::Selected => CELL_COLOR_SELECTED,
+            CellType::Move => CELL_COLOR_MOVE,
         }
     }
 
@@ -153,8 +193,16 @@ impl Cell {
     }
 
     fn draw(&self, stdout: &mut Stdout, board: &Board) -> std::io::Result<()> {
-        for c in 0..CELL_WIDTH {
-            for r in 0..CELL_HIGHT {
+        let (columns, rows) = if matches!(self.cell_type, CellType::Move) {
+            (
+                (0..1).chain(CELL_WIDTH - 1..CELL_WIDTH),
+                (0..1).chain(CELL_HIGHT - 1..CELL_HIGHT),
+            )
+        } else {
+            ((0..CELL_WIDTH).chain(1..0), (0..CELL_HIGHT).chain(1..0))
+        };
+        for c in columns {
+            for r in rows.clone() {
                 queue!(
                     stdout,
                     SetBackgroundColor(self.get_color()),
@@ -167,54 +215,21 @@ impl Cell {
                 )?;
             }
         }
-        Ok(())
-    }
 
-    fn draw_selected(&self, stdout: &mut Stdout, board: &Board) -> std::io::Result<()> {
-        for c in 0..CELL_WIDTH {
-            for r in 0..CELL_HIGHT {
-                queue!(
-                    stdout,
-                    SetBackgroundColor(CELL_COLOR_SELECTED),
-                    MoveTo(
-                        self.get_start_c(board.get_c()) + c,
-                        self.get_start_r(board.get_r()) + r,
-                    ),
-                    Print(" "),
-                    ResetColor,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn draw_available(&self, stdout: &mut Stdout, board: &Board) -> std::io::Result<()> {
-        for c in (0..1).chain(CELL_WIDTH - 1..CELL_WIDTH) {
-            for r in (0..1).chain(CELL_HIGHT - 1..CELL_HIGHT) {
-                queue!(
-                    stdout,
-                    SetBackgroundColor(CELL_COLOR_AVAILABLE),
-                    MoveTo(
-                        self.get_start_c(board.get_c()) + c,
-                        self.get_start_r(board.get_r()) + r,
-                    ),
-                    Print(" "),
-                    ResetColor,
-                )?;
-            }
-        }
         Ok(())
     }
 }
 
 fn when_clicked(board: &mut Board, mouse: Mouse) -> std::io::Result<()> {
     board.update_selected(&mouse);
+    board.update_move();
     draw(&board)?;
     Ok(())
 }
 
 fn draw(board: &Board) -> std::io::Result<()> {
     let mut stdout = stdout();
+    queue!(stdout, Clear(crossterm::terminal::ClearType::All))?;
     board.draw(&mut stdout)?;
     stdout.flush()?;
     Ok(())
@@ -231,6 +246,7 @@ fn main() -> std::io::Result<()> {
 
     // initialization
     let mut board = Board::new()?;
+    when_clicked(&mut board, Mouse { column: 0, row: 0 })?;
 
     while board.running {
         if poll(Duration::from_millis(500))? {
