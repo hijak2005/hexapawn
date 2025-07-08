@@ -28,7 +28,7 @@ struct Board {
     cells: Vec<Cell>,
     selected_cell: Option<Cell>,
     move_cells: Vec<Cell>,
-    running: bool,
+    status: BoardStatus,
     columns: u16,
     rows: u16,
 }
@@ -45,13 +45,20 @@ struct Mouse {
     row: u16,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum CellType {
     Empty,
     Player,
     Computer,
     Selected,
     Move,
+}
+
+#[derive(PartialEq)]
+enum BoardStatus {
+    Moving,
+    Selecting,
+    End,
 }
 
 impl Board {
@@ -76,7 +83,7 @@ impl Board {
             cells,
             selected_cell: None,
             move_cells: Vec::new(),
-            running: true,
+            status:BoardStatus::Selecting,
             columns,
             rows,
         })
@@ -94,12 +101,25 @@ impl Board {
         self.selected_cell = self
             .cells
             .iter()
-            .find(|cell| cell.is_clicked(self, mouse) && matches!(cell.cell_type, CellType::Player))
+            .find(|cell| cell.is_clicked(self, mouse) && cell.cell_type == CellType::Player)
             .cloned()
             .map(|mut cell| {
                 cell.cell_type = CellType::Selected;
                 cell
             });
+    }
+
+    fn update_cells(&mut self, mouse: &Mouse) {
+        if let Some(selected_cell) = self.selected_cell {
+            if let Some(move_cell) = self
+                .move_cells
+                .iter()
+                .find(|cell| cell.is_clicked(self, mouse))
+                .cloned()
+            {
+                self.move_cell(selected_cell, move_cell);
+            };
+        }
     }
 
     fn update_move(&mut self) {
@@ -111,7 +131,7 @@ impl Board {
                 .iter()
                 .find(|c| c.column == column && c.row + 1 == row)
             {
-                if matches!(empty_front.cell_type, CellType::Empty) {
+                if empty_front.cell_type == CellType::Empty {
                     self.move_cells.push(Cell {
                         column,
                         row: row - 1,
@@ -124,9 +144,9 @@ impl Board {
                 .iter()
                 .find(|c| c.column == column + 1 && c.row + 1 == row)
             {
-                if matches!(enemy_right.cell_type, CellType::Empty) {
+                if enemy_right.cell_type == CellType::Computer {
                     self.move_cells.push(Cell {
-                        column,
+                        column: column + 1,
                         row: row - 1,
                         cell_type: CellType::Move,
                     });
@@ -137,9 +157,9 @@ impl Board {
                 .iter()
                 .find(|c| c.column + 1 == column && c.row + 1 == row)
             {
-                if matches!(enemy_left.cell_type, CellType::Empty) {
+                if enemy_left.cell_type == CellType::Computer {
                     self.move_cells.push(Cell {
-                        column,
+                        column: column - 1,
                         row: row - 1,
                         cell_type: CellType::Move,
                     });
@@ -148,8 +168,19 @@ impl Board {
         }
     }
 
-    fn update_cells(){
-        
+    fn move_cell(&mut self, selected_cell: Cell, move_cell: Cell) {
+        let selected_idx = self
+            .cells
+            .iter()
+            .position(|cell| cell.column == selected_cell.column && cell.row == selected_cell.row);
+        let move_idx = self
+            .cells
+            .iter()
+            .position(|cell| cell.column == move_cell.column && cell.row == move_cell.row);
+        if let (Some(i), Some(j)) = (selected_idx, move_idx) {
+            self.cells[i].cell_type = CellType::Empty;
+            self.cells[j].cell_type = CellType::Player;
+        }
     }
 
     fn draw(&self, stdout: &mut Stdout) -> std::io::Result<()> {
@@ -177,23 +208,23 @@ impl Cell {
         }
     }
 
-    fn get_start_c(&self, board_c: u16) -> u16 {
+    fn get_c(&self, board_c: u16) -> u16 {
         self.column * (CELL_WIDTH + CELL_WIDTH_GAP) + board_c
     }
 
-    fn get_start_r(&self, board_r: u16) -> u16 {
+    fn get_r(&self, board_r: u16) -> u16 {
         self.row * (CELL_HIGHT + CELL_HIGHT_GAP) + board_r
     }
 
     fn is_clicked(&self, board: &Board, mouse: &Mouse) -> bool {
-        self.get_start_c(board.get_c()) <= mouse.column
-            && mouse.column <= self.get_start_c(board.get_c()) + CELL_WIDTH
-            && self.get_start_r(board.get_r()) <= mouse.row
-            && mouse.row <= self.get_start_r(board.get_r()) + CELL_HIGHT
+        self.get_c(board.get_c()) <= mouse.column
+            && mouse.column <= self.get_c(board.get_c()) + CELL_WIDTH
+            && self.get_r(board.get_r()) <= mouse.row
+            && mouse.row <= self.get_r(board.get_r()) + CELL_HIGHT
     }
 
     fn draw(&self, stdout: &mut Stdout, board: &Board) -> std::io::Result<()> {
-        let (columns, rows) = if matches!(self.cell_type, CellType::Move) {
+        let (columns, rows) = if self.cell_type == CellType::Move {
             (
                 (0..1).chain(CELL_WIDTH - 1..CELL_WIDTH),
                 (0..1).chain(CELL_HIGHT - 1..CELL_HIGHT),
@@ -206,10 +237,7 @@ impl Cell {
                 queue!(
                     stdout,
                     SetBackgroundColor(self.get_color()),
-                    MoveTo(
-                        self.get_start_c(board.get_c()) + c,
-                        self.get_start_r(board.get_r()) + r,
-                    ),
+                    MoveTo(self.get_c(board.get_c()) + c, self.get_r(board.get_r()) + r,),
                     Print(" "),
                     ResetColor,
                 )?;
@@ -221,6 +249,7 @@ impl Cell {
 }
 
 fn when_clicked(board: &mut Board, mouse: Mouse) -> std::io::Result<()> {
+    board.update_cells(&mouse);
     board.update_selected(&mouse);
     board.update_move();
     draw(&board)?;
@@ -248,7 +277,7 @@ fn main() -> std::io::Result<()> {
     let mut board = Board::new()?;
     when_clicked(&mut board, Mouse { column: 0, row: 0 })?;
 
-    while board.running {
+    while board.status!=BoardStatus::End {
         if poll(Duration::from_millis(500))? {
             match read()? {
                 Event::Mouse(MouseEvent {
@@ -261,7 +290,7 @@ fn main() -> std::io::Result<()> {
                     code: KeyCode::Char('q'),
                     ..
                 }) => {
-                    board.running = false;
+                    board.status = BoardStatus::End;
                     Ok(())
                 }
                 _ => Ok(()),
